@@ -23,6 +23,12 @@ function safeWriteCache(marker: UpdateMarker): void {
 // cycle. Existing importers (`test/check-update.test.ts`, etc.) keep working.
 export { parseSemver, isMinorOrMajorBump };
 
+type CheckUpdateError =
+  | 'no_releases'
+  | 'network_unavailable'
+  | 'rate_limited'
+  | 'http_error';
+
 interface CheckUpdateResult {
   current_version: string;
   current_source: 'package-json';
@@ -32,7 +38,18 @@ interface CheckUpdateResult {
   release_url: string;
   changelog_diff: string;
   published_at: string;
-  error?: string;
+  error?: CheckUpdateError;
+  error_transient?: boolean;
+}
+
+type FetchReleaseResult =
+  | { ok: true; tag: string; published_at: string; url: string }
+  | { ok: false; error: CheckUpdateError; transient: boolean };
+
+export function classifyHttpStatus(status: number): { error: CheckUpdateError; transient: boolean } {
+  if (status === 404) return { error: 'no_releases', transient: false };
+  if (status === 429) return { error: 'rate_limited', transient: true };
+  return { error: 'http_error', transient: true };
 }
 
 function upgradeCommandForMethod(method: string): string {
@@ -49,21 +66,29 @@ function upgradeCommandForMethod(method: string): string {
  * path and tests can reuse it. 5s timeout (was 10s) — this runs on the detached
  * refresh, never the hot path, but a tight bound keeps the refresh cheap.
  */
-export async function fetchLatestRelease(): Promise<{ tag: string; published_at: string; url: string } | null> {
+export async function fetchLatestRelease(): Promise<FetchReleaseResult> {
+  let res: Response;
   try {
-    const res = await fetch('https://api.github.com/repos/garrytan/gbrain/releases/latest', {
+    res = await fetch('https://api.github.com/repos/garrytan/gbrain/releases/latest', {
       headers: { 'User-Agent': `gbrain/${VERSION}` },
       signal: AbortSignal.timeout(5_000),
     });
-    if (!res.ok) return null;
+  } catch {
+    return { ok: false, error: 'network_unavailable', transient: true };
+  }
+  if (!res.ok) {
+    return { ok: false, ...classifyHttpStatus(res.status) };
+  }
+  try {
     const data = await res.json() as any;
     return {
+      ok: true,
       tag: data.tag_name || '',
       published_at: data.published_at || '',
       url: data.html_url || '',
     };
   } catch {
-    return null;
+    return { ok: false, error: 'http_error', transient: true };
   }
 }
 
@@ -126,7 +151,7 @@ export function extractChangelogBetween(changelog: string, from: string, to: str
  */
 export async function refreshUpdateCache(): Promise<void> {
   const release = await fetchLatestRelease();
-  if (!release) {
+  if (!release.ok) {
     safeWriteCache({ kind: 'up_to_date', current: VERSION });
     return;
   }
@@ -165,7 +190,7 @@ export async function runCheckUpdate(args: string[]) {
 
   const release = await fetchLatestRelease();
 
-  if (!release) {
+  if (!release.ok) {
     // Warm the cache fail-open so the startup hook doesn't re-fetch every call.
     safeWriteCache({ kind: 'up_to_date', current: VERSION });
     if (json) {
@@ -178,10 +203,18 @@ export async function runCheckUpdate(args: string[]) {
         release_url: '',
         changelog_diff: '',
         published_at: '',
-        error: 'no_releases',
+        error: release.error,
+        error_transient: release.transient,
       }, null, 2));
     } else {
-      console.log(`GBrain ${VERSION} — could not check for updates (no releases found or network unavailable).`);
+      const reason = release.error === 'no_releases'
+        ? 'no releases published yet'
+        : release.error === 'rate_limited'
+          ? 'GitHub API rate limit, will retry next cycle'
+          : release.error === 'network_unavailable'
+            ? 'network unavailable, will retry next cycle'
+            : 'GitHub API unreachable, will retry next cycle';
+      console.log(`GBrain ${VERSION} — could not check for updates (${reason}).`);
     }
     return;
   }
