@@ -130,6 +130,48 @@ export function shouldSpawnAutopilotWorker(args: string[]): boolean {
   return !args.includes('--no-worker');
 }
 
+/**
+ * Test if a PID is alive by sending signal 0 (probe, no delivery).
+ * Returns true if the process exists and we have permission to signal it.
+ * EPERM (exists but other user) is treated as alive — we can't prove it
+ * isn't a running autopilot, so be conservative and don't take over.
+ */
+export function isPidAlive(pid: number): boolean {
+  if (!Number.isFinite(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e: unknown) {
+    return (e as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+/**
+ * Decide whether the current process should acquire the autopilot lock.
+ *
+ * Dead PID + any mtime → take over. Alive PID + fresh mtime → exit.
+ * Alive PID + old mtime → take over, preserving the original stale-lock
+ * fallback for wedged instances.
+ */
+export function decideLockAcquisition(
+  lockPath: string,
+  currentPid: number,
+  nowMs: number,
+): { action: 'acquire' } | { action: 'exit'; holderPid: number } | { action: 'takeover'; reason: string } {
+  if (!existsSync(lockPath)) return { action: 'acquire' };
+
+  const stat = require('fs').statSync(lockPath);
+  const ageMinutes = (nowMs - stat.mtimeMs) / 60000;
+  const raw = (() => { try { return readFileSync(lockPath, 'utf-8').trim(); } catch { return ''; } })();
+  const holderPid = parseInt(raw, 10);
+  const sameProcess = Number.isFinite(holderPid) && holderPid === currentPid;
+  const alive = !sameProcess && isPidAlive(holderPid);
+
+  if (alive && ageMinutes < 10) return { action: 'exit', holderPid };
+  const reason = !alive ? `dead pid ${raw || '<empty>'}` : `>10 min old`;
+  return { action: 'takeover', reason };
+}
+
 // ── Self-upgrade silent channel (v0.42; opt-in, supervisor-relaunch) ─────────
 
 /**
@@ -351,14 +393,13 @@ export async function runAutopilot(engine: BrainEngine, args: string[]) {
   const lockPath = gbrainHomePath('autopilot.lock');
   try {
     mkdirSync(gbrainHomePath(), { recursive: true });
-    if (existsSync(lockPath)) {
-      const stat = require('fs').statSync(lockPath);
-      const ageMinutes = (Date.now() - stat.mtimeMs) / 60000;
-      if (ageMinutes < 10) {
-        console.error('Another autopilot instance is running (lock file is fresh). Exiting.');
-        process.exit(0);
-      }
-      console.log('Stale lock file found (>10 min). Taking over.');
+    const lockDecision = decideLockAcquisition(lockPath, process.pid, Date.now());
+    if (lockDecision.action === 'exit') {
+      console.error(`Another autopilot instance is running (pid ${lockDecision.holderPid}, lock file is fresh). Exiting.`);
+      process.exit(0);
+    }
+    if (lockDecision.action === 'takeover') {
+      console.log(`Stale lock file found (${lockDecision.reason}). Taking over.`);
     }
     writeFileSync(lockPath, String(process.pid));
   } catch { /* best-effort */ }
