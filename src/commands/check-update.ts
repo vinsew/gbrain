@@ -79,17 +79,23 @@ export async function fetchLatestRelease(): Promise<FetchReleaseResult> {
   if (!res.ok) {
     return { ok: false, ...classifyHttpStatus(res.status) };
   }
+  let data: any;
   try {
-    const data = await res.json() as any;
-    return {
-      ok: true,
-      tag: data.tag_name || '',
-      published_at: data.published_at || '',
-      url: data.html_url || '',
-    };
+    data = await res.json();
   } catch {
+    // 2xx with malformed/non-JSON body — treat as transient: GitHub edge cache
+    // can serve garbled bytes during deploys. Next cycle will retry.
     return { ok: false, error: 'http_error', transient: true };
   }
+  if (!data || typeof data.tag_name !== 'string' || data.tag_name === '') {
+    return { ok: false, error: 'http_error', transient: true };
+  }
+  return {
+    ok: true,
+    tag: data.tag_name,
+    published_at: typeof data.published_at === 'string' ? data.published_at : '',
+    url: typeof data.html_url === 'string' ? data.html_url : '',
+  };
 }
 
 export async function fetchChangelog(currentVersion: string, latestVersion: string): Promise<string> {
