@@ -153,7 +153,7 @@ describe('fetchLatestRelease (malformed responses)', () => {
   afterEach(() => { globalThis.fetch = realFetch; });
 
   function stubFetch(response: Response) {
-    globalThis.fetch = (async () => response) as typeof fetch;
+    globalThis.fetch = (async () => response) as unknown as typeof fetch;
   }
 
   test('2xx with non-JSON body → transient http_error (does not throw)', async () => {
