@@ -12,6 +12,7 @@ import {
   isMarkdownFilePath,
   isImageFilePath as isImageFilePathFromSync,
   pruneDir,
+  clearFailures,
   type SyncStrategy,
 } from '../core/sync.ts';
 import { sortNewestFirst } from '../core/sort-newest-first.ts';
@@ -250,6 +251,7 @@ export async function runImport(
         importedSlugs.push(result.slug);
         // v0.33.2: path-based checkpoint — record only on success.
         completed.add(relativePath);
+        clearFailures(sourceId ?? 'default', [relativePath]);
       } else {
         skipped++;
         if (result.error && result.error !== 'unchanged') {
@@ -260,6 +262,7 @@ export async function runImport(
           // 'unchanged' or no-error skip: content_hash matched a prior
           // successful import, so this file IS done for checkpoint purposes.
           completed.add(relativePath);
+          clearFailures(sourceId ?? 'default', [relativePath]);
         }
       }
     } catch (e: unknown) {
