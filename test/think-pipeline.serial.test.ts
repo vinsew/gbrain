@@ -272,8 +272,10 @@ function stubClientFromText(text: string): ThinkLLMClient {
     create: async () => ({
       id: 'msg_1698', type: 'message', role: 'assistant', model: 'stub',
       stop_reason: 'end_turn', stop_sequence: null,
-      usage: { input_tokens: 1, output_tokens: 1, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, server_tool_use: null, service_tier: null },
-      content: [{ type: 'text', text }],
+      usage: { input_tokens: 1, output_tokens: 1, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, server_tool_use: null, service_tier: null, cache_creation: null, inference_geo: null },
+      content: [{ type: 'text', text, citations: null }],
+      container: null,
+      stop_details: null,
     }),
   };
 }

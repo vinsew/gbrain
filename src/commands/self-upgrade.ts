@@ -36,7 +36,7 @@ export async function runSelfUpgrade(args: string[]): Promise<void> {
   const json = args.includes('--json');
 
   const release = await fetchLatestRelease();
-  const latest = release ? release.tag.replace(/^v/, '') : null;
+  const latest = release.ok ? release.tag.replace(/^v/, '') : null;
   const behind = !!latest && isValidVersionString(latest) && isMinorOrMajorBump(VERSION, latest);
 
   // Warm the cache so the next invocation's startup hook can emit without a fetch.
@@ -72,7 +72,7 @@ export async function runSelfUpgrade(args: string[]): Promise<void> {
             latest_version: latest ?? '',
             update_available: behind,
             install_method: detectInstallMethod(),
-            release_url: release?.url ?? '',
+            release_url: release.ok ? release.url : '',
             changelog_diff: changelogDiff,
           },
           null,
@@ -85,7 +85,7 @@ export async function runSelfUpgrade(args: string[]): Promise<void> {
         console.log('\nWhat changed:\n');
         console.log(changelogDiff);
       }
-      if (release?.url) console.log(`\nRelease: ${release.url}`);
+      if (release.ok && release.url) console.log(`\nRelease: ${release.url}`);
     } else {
       console.log(`gbrain ${VERSION} is up to date.`);
     }
