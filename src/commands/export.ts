@@ -3,6 +3,7 @@ import { join, resolve } from 'node:path';
 import type { BrainEngine } from '../core/engine.ts';
 import { resolveSourceLocalFilePath, serializeMarkdown } from '../core/markdown.ts';
 import { scannerSlugRootMode } from '../core/write-through.ts';
+import { Lexer, type Token } from 'marked';
 import { createProgress } from '../core/progress.ts';
 import { getCliOptions, cliOptsToProgressOptions } from '../core/cli-options.ts';
 import { loadStorageConfig, isDbOnly } from '../core/storage-config.ts';
@@ -43,6 +44,40 @@ The reserved .gbrain-export-status starts incomplete and ends with COMPLETE only
 after successful publication. On failure, preserve partial output and retry into
 a fresh directory. See docs/storage-tiering.md#safe-export.`);
     return;
+/** Make parsed inline slug links usable on disk, preserving all other bytes. */
+export function normalizeInternalLinks(content: string): string {
+  function rewrite(raw: string, tokens: Token[]): string {
+    let cursor = 0;
+    let result = '';
+    for (const token of tokens) {
+      const at = raw.indexOf(token.raw, cursor);
+      // Some block containers normalize indentation. If positions cannot be
+      // mapped back exactly, preserve that container rather than guess.
+      if (at < 0) return raw;
+      let replacement = token.raw;
+      if (token.type === 'link') {
+        const match = token.raw.match(/^([\s\S]*\]\()(<)?([^\s()<>]+)(>)?((?:\s+(?:"[^"\n]*"|'[^'\n]*'))?\s*\))$/);
+        if (match) {
+          const [, prefix, open = '', target, close = '', suffix] = match;
+          const path = target.split(/[?#]/)[0];
+          const basename = path.split('/').pop() || '';
+          if (Boolean(open) === Boolean(close) && !target.startsWith('#') && !target.startsWith('//') &&
+              !/^[a-z][a-z0-9+.-]*:/i.test(target) && basename &&
+              !/\.[a-z0-9]{1,5}$/i.test(basename) && !/[\\<>]/.test(path)) {
+            replacement = `${prefix}${open}${path}.md${target.slice(path.length)}${close}${suffix}`;
+          }
+        }
+      } else if (token.type !== 'code' && token.type !== 'codespan' && token.type !== 'html' && token.type !== 'image') {
+        if ('tokens' in token && Array.isArray(token.tokens)) replacement = rewrite(token.raw, token.tokens);
+        else if (token.type === 'list') replacement = rewrite(token.raw, token.items);
+      }
+      result += raw.slice(cursor, at) + replacement;
+      cursor = at + token.raw.length;
+    }
+    return result + raw.slice(cursor);
+  }
+  return rewrite(content, Lexer.lex(content));
+}
   }
   let stage: ExportStage | undefined;
   try {
@@ -120,7 +155,7 @@ a fresh directory. See docs/storage-tiering.md#safe-export.`);
             const needsSlugStamp = slugifyPath(page.slug + '.md') !== page.slug;
             const frontmatter = (needsSlugStamp || fmSlug !== undefined) && fmSlug !== page.slug
               ? { ...(page.frontmatter ?? {}), slug: page.slug } : page.frontmatter;
-            staged.add(page.slug + '.md', 'file', serializeMarkdown(frontmatter, page.compiled_truth, page.timeline,
+            staged.add(page.slug + '.md', 'file', serializeMarkdown(frontmatter, normalizeInternalLinks(page.compiled_truth), normalizeInternalLinks(page.timeline),
               { type: page.type, title: page.title, tags: snapshot.tags }));
             const raw = Number(key.raw_count) ? await tx.getRawData(page.slug, undefined, { sourceId: page.source_id, includeDeleted: true }) : [];
             if (raw.length) {
@@ -133,8 +168,7 @@ a fresh directory. See docs/storage-tiering.md#safe-export.`);
         }
         cursor = batch[batch.length - 1].id;
       }
-      checkDeadline();
-    });
+      checkDeadline();    });
     console.log(`${restoreOnly ? 'Restoring' : 'Exporting'} ${stage.pages}${restoreOnly ? ' db_only' : ''} pages to ${outDir}/`);
     const progress = createProgress(cliOptsToProgressOptions(getCliOptions()));
     progress.start('export.pages', stage.pages);

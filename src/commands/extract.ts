@@ -49,6 +49,7 @@ import { parseMarkdown } from '../core/markdown.ts';
 import { resolveCandidateSources, resolveLinkFallbackDefault, loadLinkPageMetadata, capturedLinkEndpoints, fileLinkOwnership, replaceFileLinks, replacePageFileLinks, type LinkPageMetadata } from '../core/link-reconciliation.ts';
 export { reconcileSourceLinks, type SourceLinkReconciliationResult } from '../core/link-reconciliation.ts';
 export { extractMarkdownLinks } from '../core/link-extraction.ts';
+import { buildLinkRows, buildTimelineRows } from '../core/batch-rows.ts';
 import {
   extractPageLinks, parseTimelineEntries, deriveTimelineAnchor, inferLinkType, makeResolver,
   attendanceEvidenceRanges, hasAttendanceEvidence, resolvedLinkCandidate, orientCanonicalAttendance, extractMarkdownLinks,
@@ -1842,6 +1843,42 @@ async function extractLinksFromDB(
 
   // Dedup in dry-run only — DB enforces uniqueness via ON CONFLICT in batch writes.
   const dryRunSeen = dryRun ? new Set<string>() : null;
+  // Preview the same source and provenance tuple used by addLinksBatch.
+  const existingLinksByFromSrc = dryRun ? new Map<string, Set<string>>() : null;
+  async function existingLinkKeysForFrom(fromSlug: string, fromSourceId: string): Promise<Set<string>> {
+    if (!existingLinksByFromSrc) return new Set();
+    const cacheKey = `${fromSourceId}::${fromSlug}`;
+    const cached = existingLinksByFromSrc.get(cacheKey);
+    if (cached) return cached;
+    const rows = await engine.executeRaw<{
+      from_slug: string;
+      to_slug: string;
+      link_type: string;
+      link_source: string | null;
+      from_source_id: string;
+      to_source_id: string;
+      origin_slug: string | null;
+      origin_source_id: string | null;
+    }>(
+      `SELECT f.slug AS from_slug, t.slug AS to_slug,
+              l.link_type, l.link_source,
+              f.source_id AS from_source_id, t.source_id AS to_source_id,
+              o.slug AS origin_slug, o.source_id AS origin_source_id
+       FROM links l
+       JOIN pages f ON f.id = l.from_page_id
+       JOIN pages t ON t.id = l.to_page_id
+       LEFT JOIN pages o ON o.id = l.origin_page_id
+       WHERE f.slug = $1 AND f.source_id = $2`,
+      [fromSlug, fromSourceId],
+    );
+    const keys = new Set<string>();
+    for (const r of rows) {
+      keys.add(JSON.stringify([r.from_source_id, r.from_slug, r.to_source_id, r.to_slug, r.link_type, r.link_source, r.origin_source_id, r.origin_slug]));
+    }
+    existingLinksByFromSrc.set(cacheKey, keys);
+    return keys;
+  }
+
 
   for (const { slug, source_id } of walkRefs) {
     const snapshot = await engine.readPageSnapshot(slug, { sourceId: source_id });
@@ -1892,9 +1929,19 @@ async function extractLinksFromDB(
       const { from_slug: fromSlug, to_slug: toSlug, from_source_id: fromSourceId, to_source_id: toSourceId } = row;
 
       if (dryRunSeen) {
-        const key = `${fromSourceId}::${fromSlug}::${toSourceId}::${toSlug}::${c.linkType}::${c.linkSource ?? 'markdown'}`;
+        const [row] = buildLinkRows([{
+          from_slug: fromSlug, to_slug: toSlug, link_type: c.linkType,
+          link_source: c.linkSource, origin_slug: c.originSlug,
+          from_source_id: fromSourceId, to_source_id: toSourceId,
+          origin_source_id: source_id,
+        }]);
+        const originExists = row.origin_slug && slugToSources.get(row.origin_slug)?.includes(row.origin_source_id);
+        const key = JSON.stringify([row.from_source_id, row.from_slug, row.to_source_id, row.to_slug,
+          row.link_type, row.link_source, originExists ? row.origin_source_id : null, originExists ? row.origin_slug : null]);
         if (dryRunSeen.has(key)) continue;
         dryRunSeen.add(key);
+        const existingForFrom = await existingLinkKeysForFrom(fromSlug, fromSourceId);
+        if (existingForFrom.has(key)) continue;
         if (jsonMode) {
           process.stdout.write(JSON.stringify({
             action: 'add_link', from: fromSlug, from_source_id: fromSourceId,
@@ -1997,6 +2044,28 @@ async function extractTimelineFromDB(
 
   // Dedup in dry-run only — DB enforces uniqueness via ON CONFLICT in batch writes.
   const dryRunSeen = dryRun ? new Set<string>() : null;
+  // Timeline uniqueness includes the provenance label as well as the page.
+  const existingTimelineBySrcSlug = dryRun ? new Map<string, Set<string>>() : null;
+  async function existingTimelineKeysForSlug(slug: string, sourceId: string): Promise<Set<string>> {
+    if (!existingTimelineBySrcSlug) return new Set();
+    const cacheKey = `${sourceId}::${slug}`;
+    const cached = existingTimelineBySrcSlug.get(cacheKey);
+    if (cached) return cached;
+    const rows = await engine.executeRaw<{ date: string; summary: string; source_id: string; source: string }>(
+      `SELECT te.date::text AS date, te.summary, p.source_id, te.source
+       FROM timeline_entries te
+       JOIN pages p ON p.id = te.page_id
+       WHERE p.slug = $1 AND p.source_id = $2`,
+      [slug, sourceId],
+    );
+    const keys = new Set<string>();
+    for (const r of rows) {
+      keys.add(JSON.stringify([r.source_id, slug, r.date, r.summary, r.source]));
+    }
+    existingTimelineBySrcSlug.set(cacheKey, keys);
+    return keys;
+  }
+
 
   const batch: TimelineBatchInput[] = [];
   async function flush() {
@@ -2038,9 +2107,12 @@ async function extractTimelineFromDB(
 
     for (const entry of entries) {
       if (dryRunSeen) {
-        const key = `${source_id}::${slug}::${entry.date}::${entry.summary}`;
+        const [row] = buildTimelineRows([{ slug, source_id, ...entry }]);
+        const key = JSON.stringify([row.source_id, row.slug, row.date, row.summary, row.source]);
         if (dryRunSeen.has(key)) continue;
         dryRunSeen.add(key);
+        const existingForSlug = await existingTimelineKeysForSlug(slug, source_id);
+        if (existingForSlug.has(key)) continue;
         if (jsonMode) {
           process.stdout.write(JSON.stringify({
             action: 'add_timeline', slug, source_id, date: entry.date,

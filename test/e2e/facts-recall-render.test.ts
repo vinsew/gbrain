@@ -17,13 +17,20 @@ d('gbrain recall --today (Postgres)', () => {
   test('renders markdown with kind icons', async () => {
     if (!RUN) return;
     const engine = getEngine();
+    const sourceId = 'recall-render-pg';
+    await engine.executeRaw(
+      `INSERT INTO sources (id, name, config)
+       VALUES ($1, 'Recall render E2E', '{}'::jsonb)
+       ON CONFLICT (id) DO NOTHING`,
+      [sourceId],
+    );
     await engine.insertFact(
       { fact: 'render-event', kind: 'event', entity_slug: 'render-pg-e', source: 'test' },
-      { source_id: 'default' },
+      { source_id: sourceId },
     );
     await engine.insertFact(
       { fact: 'render-pref', kind: 'preference', entity_slug: 'render-pg-p', source: 'test' },
-      { source_id: 'default' },
+      { source_id: sourceId },
     );
 
     const origWrite = process.stdout.write.bind(process.stdout);
@@ -33,7 +40,7 @@ d('gbrain recall --today (Postgres)', () => {
       return true;
     }) as typeof process.stdout.write;
     try {
-      await runRecall(engine, ['--today']);
+      await runRecall(engine, ['--today', '--source', sourceId]);
     } finally {
       process.stdout.write = origWrite;
     }
