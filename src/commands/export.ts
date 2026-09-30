@@ -25,25 +25,6 @@ function option(args: string[], name: string): string | undefined {
   return value;
 }
 
-export async function runExport(engine: BrainEngine, args: string[]): Promise<void> {
-  if (args.includes('--help') || args.includes('-h')) {
-    console.log(`Usage: gbrain export [--dir <path>] [--source <id>] [--type <type>] [--slug-prefix <prefix>]
-       gbrain export --restore-only [--source <id>] [--repo <path>] [--dir <path>] [--slug-prefix <prefix>]
-
-Export a coherent point-in-time Markdown snapshot; this is not a database backup.
-  --dir <path>           Output directory (default: ./export).
-  --source <id>          Select one active source; omitted includes all sources.
-  --type <type>          Select one page type.
-  --slug-prefix <prefix> Select stored slugs beginning with this literal prefix.
-  --restore-only        Export missing db_only files for one source.
-  --repo <path>          Restore source's repository and storage config; output still goes to --dir.
-
-Colliding planned paths and occupied output paths refuse; nothing is overwritten.
-Existing empty directories and unrelated files are preserved. There is no force option.
-The reserved .gbrain-export-status starts incomplete and ends with COMPLETE only
-after successful publication. On failure, preserve partial output and retry into
-a fresh directory. See docs/storage-tiering.md#safe-export.`);
-    return;
 /** Make parsed inline slug links usable on disk, preserving all other bytes. */
 export function normalizeInternalLinks(content: string): string {
   function rewrite(raw: string, tokens: Token[]): string {
@@ -78,6 +59,27 @@ export function normalizeInternalLinks(content: string): string {
   }
   return rewrite(content, Lexer.lex(content));
 }
+
+export async function runExport(engine: BrainEngine, args: string[]): Promise<void> {
+  if (args.includes('--help') || args.includes('-h')) {
+    console.log(`Usage: gbrain export [--dir <path>] [--source <id>] [--type <type>] [--slug-prefix <prefix>]
+       gbrain export --restore-only [--source <id>] [--repo <path>] [--dir <path>] [--slug-prefix <prefix>]
+
+Export a coherent point-in-time Markdown snapshot; this is not a database backup.
+  --dir <path>           Output directory (default: ./export).
+  --source <id>          Select one active source; omitted includes all sources.
+  --type <type>          Select one page type.
+  --slug-prefix <prefix> Select stored slugs beginning with this literal prefix.
+  --restore-only        Export missing db_only files for one source.
+  --repo <path>          Restore source's repository and storage config; output still goes to --dir.
+
+Colliding planned paths and occupied output paths refuse; nothing is overwritten.
+Existing empty directories and unrelated files are preserved. There is no force option.
+The reserved .gbrain-export-status starts incomplete and ends with COMPLETE only
+after successful publication. On failure, preserve partial output and retry into
+a fresh directory. See docs/storage-tiering.md#safe-export.`);
+    return;
+
   }
   let stage: ExportStage | undefined;
   try {

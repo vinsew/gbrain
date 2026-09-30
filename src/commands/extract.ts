@@ -1940,7 +1940,7 @@ async function extractLinksFromDB(
           row.link_type, row.link_source, originExists ? row.origin_source_id : null, originExists ? row.origin_slug : null]);
         if (dryRunSeen.has(key)) continue;
         dryRunSeen.add(key);
-        const existingForFrom = await existingLinkKeysForFrom(fromSlug, fromSourceId);
+        const existingForFrom = await existingLinkKeysForFrom(fromSlug, row.from_source_id);
         if (existingForFrom.has(key)) continue;
         if (jsonMode) {
           process.stdout.write(JSON.stringify({
